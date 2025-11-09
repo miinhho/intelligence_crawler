@@ -1,0 +1,38 @@
+[project]
+name = "intelligence-crawler"
+version = "0.1.0"
+description = "Intelligent web crawler with semantic analysis and topic-based filtering"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "aiohttp-retry>=2.8.3",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "trafilatura>=1.11.0",
+    "transformers>=4.40.0",
+    "sentence-transformers>=2.7.0",
+    "torch>=2.2.0",
+    "networkx>=3.3",
+    "aiofiles>=23.2.0",
+    "tqdm>=4.66.0",
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.11.0",
+    "aiolimiter>=1.1.0",
+    "psutil>=5.9.0",
+    "py-spy>=0.3.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "memory-profiler>=0.61.0",
+    "line-profiler>=4.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["crawler"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

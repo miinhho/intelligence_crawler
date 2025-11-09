@@ -1,0 +1,248 @@
+"""
+실제 웹사이트로 크롤러 테스트
+성능 프로파일링 포함
+"""
+
+import asyncio
+import json
+from datetime import datetime
+
+from crawler import IntelligentCrawler
+from crawler.crawler_engine import CrawlConfig
+
+
+async def test_real_website():
+    """실제 웹사이트 크롤링 테스트"""
+    print("=" * 70)
+    print("Real Website Crawl Test with Profiling")
+    print("=" * 70)
+
+    # 테스트 설정
+    TEST_CONFIGS = [
+        {
+            "name": "Wikipedia AI",
+            "seed_urls": ["https://en.wikipedia.org/wiki/Artificial_intelligence"],
+            "topic": "artificial intelligence machine learning neural networks",
+            "max_pages": 15,
+            "max_depth": 2,
+        },
+        {
+            "name": "Python Docs",
+            "seed_urls": ["https://docs.python.org/3/tutorial/"],
+            "topic": "python programming tutorial",
+            "max_pages": 10,
+            "max_depth": 1,
+        },
+        {
+            "name": "ArXiv ML",
+            "seed_urls": ["https://arxiv.org/list/cs.LG/recent"],
+            "topic": "machine learning deep learning research",
+            "max_pages": 10,
+            "max_depth": 1,
+        },
+    ]
+
+    # 사용자에게 선택 요청
+    print("\nAvailable test sites:")
+    for i, config in enumerate(TEST_CONFIGS, 1):
+        print(f"  {i}. {config['name']}")
+        print(f"     URL: {config['seed_urls'][0]}")
+        print(f"     Topic: {config['topic']}")
+        print(f"     Max pages: {config['max_pages']}")
+
+    print("\n  0. Custom (enter your own)")
+
+    try:
+        choice = int(input("\nSelect test (0-3): "))
+    except (ValueError, EOFError):
+        choice = 1
+        print(f"Using default: {TEST_CONFIGS[0]['name']}")
+
+    # 설정 선택
+    if choice == 0:
+        test_config = {
+            "name": "Custom",
+            "seed_urls": [input("Enter seed URL: ")],
+            "topic": input("Enter topic: "),
+            "max_pages": int(input("Max pages (default 10): ") or "10"),
+            "max_depth": int(input("Max depth (default 2): ") or "2"),
+        }
+    elif 1 <= choice <= len(TEST_CONFIGS):
+        test_config = TEST_CONFIGS[choice - 1]
+    else:
+        print("Invalid choice, using default")
+        test_config = TEST_CONFIGS[0]
+
+    print(f"\n{'=' * 70}")
+    print(f"Testing: {test_config['name']}")
+    print(f"{'=' * 70}\n")
+
+    # 크롤러 설정
+    config = CrawlConfig(
+        max_pages=test_config["max_pages"],
+        max_depth=test_config["max_depth"],
+        request_delay=1.0,  # 실제 사이트이므로 예의상 1초
+        max_concurrent_requests=3,  # 서버 부담을 줄이기 위해 3개로 제한
+        respect_robots_txt=True,
+    )
+
+    print("[1/4] Initializing crawler with profiling...")
+    crawler = IntelligentCrawler(config, enable_profiling=True)
+    print("  ✓ Crawler initialized\n")
+
+    print("[2/4] Starting crawl...")
+    print(f"  Seed URL: {test_config['seed_urls'][0]}")
+    print(f"  Topic: {test_config['topic']}")
+    print(f"  Max pages: {config.max_pages}")
+    print(f"  Max depth: {config.max_depth}")
+    print(f"  Request delay: {config.request_delay}s")
+    print()
+
+    start_time = datetime.now()
+
+    try:
+        results = await crawler.crawl(
+            seed_urls=test_config["seed_urls"],
+            topic=test_config["topic"],
+            relevance_threshold=0.5,
+        )
+
+        end_time = datetime.now()
+        elapsed = (end_time - start_time).total_seconds()
+
+        print(f"\n[3/4] Crawl completed in {elapsed:.1f}s!")
+
+        # 결과 분석
+        stats = results["statistics"]
+        print("\n  📊 Crawl Statistics:")
+        print(f"    Pages crawled: {stats['num_pages']}")
+        print(f"    Links found: {stats['num_links']}")
+        print(f"    Internal links: {stats.get('internal_links', 0)}")
+        print(f"    External links: {stats.get('external_links', 0)}")
+        print(f"    Avg relevance: {stats.get('avg_topic_relevance', 0):.3f}")
+        print(f"    Graph density: {stats.get('density', 0):.3f}")
+
+        # 성능 메트릭
+        if "performance" in results:
+            print("\n  ⚡ Performance Metrics:")
+            perf = results["performance"]
+            print(f"    Total time: {perf['total_time']:.2f}s")
+            print(f"    Memory usage: {perf['current_memory_mb']:.2f}MB")
+            print(f"    CPU usage: {perf['cpu_percent']:.1f}%")
+
+            # 작업별 시간
+            if perf.get("timings"):
+                print("\n  ⏱️  Operation Timings:")
+                for op, timing in perf["timings"].items():
+                    print(
+                        f"    {op}: {timing['mean']:.3f}s avg "
+                        f"(total: {timing['total']:.2f}s, count: {timing['count']})"
+                    )
+
+            # 캐시 통계
+            if perf.get("cache_stats"):
+                print("\n  💾 Cache Statistics:")
+                for component, cache_stats in perf["cache_stats"].items():
+                    print(f"    {component}:")
+                    for key, value in cache_stats.items():
+                        print(f"      {key}: {value}")
+
+        # 상위 관련 페이지
+        print("\n  📄 Top Pages by Relevance:")
+        sorted_pages = sorted(
+            results["pages"], key=lambda x: x["topic_relevance"], reverse=True
+        )
+        for i, page in enumerate(sorted_pages[:5], 1):
+            relevance_bar = "█" * int(page["topic_relevance"] * 20)
+            print(f"    {i}. [{page['topic_relevance']:.3f}] {relevance_bar}")
+            print(f"       {page['title'][:60]}")
+            print(f"       Depth: {page['depth']}, PageRank: {page['pagerank']:.4f}")
+
+        # 결과 저장
+        print("\n[4/4] Saving results...")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"crawl_results_{test_config['name'].replace(' ', '_')}_{timestamp}.json"
+
+        output_data = {
+            "test_name": test_config["name"],
+            "timestamp": datetime.now().isoformat(),
+            "config": {
+                "seed_urls": test_config["seed_urls"],
+                "topic": test_config["topic"],
+                "max_pages": config.max_pages,
+                "max_depth": config.max_depth,
+            },
+            "statistics": stats,
+            "pages": results["pages"],
+            "links": results["links"][:100],  # 링크가 너무 많을 수 있으므로 상위 100개만
+        }
+
+        if "performance" in results:
+            output_data["performance"] = results["performance"]
+
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
+
+        print(f"  💾 Results saved to: {filename}")
+
+        # 요약
+        print(f"\n{'=' * 70}")
+        print("✓ Test completed successfully!")
+        print(f"{'=' * 70}")
+        print(f"\nTotal pages: {stats['num_pages']}/{config.max_pages}")
+        print(f"Avg relevance: {stats.get('avg_topic_relevance', 0):.3f}")
+        print(f"Time: {elapsed:.1f}s")
+
+        if "performance" in results:
+            perf = results["performance"]
+            print(f"Memory: {perf['current_memory_mb']:.2f}MB")
+            print(f"CPU: {perf['cpu_percent']:.1f}%")
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Crawl interrupted by user")
+    except Exception as e:
+        print(f"\n✗ Error during crawl: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+
+async def compare_with_without_profiling():
+    """프로파일링 오버헤드 측정"""
+    print("\n" + "=" * 70)
+    print("Profiling Overhead Test")
+    print("=" * 70)
+
+    seed_url = "https://example.com"
+    topic = "example"
+
+    config = CrawlConfig(max_pages=5, max_depth=1, request_delay=0.5)
+
+    # Without profiling
+    print("\n[1/2] Running without profiling...")
+    crawler1 = IntelligentCrawler(config, enable_profiling=False)
+    start1 = datetime.now()
+    await crawler1.crawl(seed_urls=[seed_url], topic=topic)
+    time1 = (datetime.now() - start1).total_seconds()
+    print(f"  Time: {time1:.2f}s")
+
+    # With profiling
+    print("\n[2/2] Running with profiling...")
+    crawler2 = IntelligentCrawler(config, enable_profiling=True)
+    start2 = datetime.now()
+    await crawler2.crawl(seed_urls=[seed_url], topic=topic)
+    time2 = (datetime.now() - start2).total_seconds()
+    print(f"  Time: {time2:.2f}s")
+
+    # Overhead
+    overhead = ((time2 - time1) / time1) * 100
+    print(f"\n  Profiling overhead: {overhead:.1f}%")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--overhead":
+        asyncio.run(compare_with_without_profiling())
+    else:
+        asyncio.run(test_real_website())
