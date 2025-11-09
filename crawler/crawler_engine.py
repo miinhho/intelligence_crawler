@@ -111,6 +111,11 @@ class IntelligentCrawler:
         self._rate_limiters: dict[str, AsyncLimiter] = {}
         self._robots_cache: dict[str, RobotFileParser] = {}
 
+        # Reusable components to avoid recreating heavy NLP models
+        self._nlp_processor: Any = None
+        self._content_extractor: Any = None
+        self._graph_manager: Any = None
+
         # Performance monitoring
         if enable_profiling:
             from .core.performance import PerformanceMonitor
@@ -188,7 +193,7 @@ class IntelligentCrawler:
     async def _process_single_url(
         self,
         url_metadata: URLMetadata,
-        topic: str,
+        topic: str | None,
         content_extractor: Any,
         nlp_processor: Any,
         graph_manager: Any,
@@ -227,17 +232,49 @@ class IntelligentCrawler:
         if self.perf:
             with self.perf.measure("nlp_processing"):
                 nlp_result = await nlp_processor.process_page(
-                    extracted["main_content"], topic, extracted["title"]
+                    extracted["main_content"],
+                    topic,
+                    extracted["title"],
+                    auto_discover=(topic is None),
                 )
                 self.perf.increment("pages_processed")
         else:
             nlp_result = await nlp_processor.process_page(
-                extracted["main_content"], topic, extracted["title"]
+                extracted["main_content"],
+                topic,
+                extracted["title"],
+                auto_discover=(topic is None),
             )
 
-        if nlp_result["topic_relevance"] < 0.5:
+        # Log auto-discovered topic
+        if nlp_result.get("auto_discovered_topic"):
+            logger.info(f"Auto-discovered topic: {nlp_result['auto_discovered_topic']}")
+
+        # Dynamic threshold based on topic discovery confidence
+        if topic is None and hasattr(nlp_processor, "discovered_topic_embedding"):
+            # Auto-discovery mode with discovered topic
+            if nlp_processor.discovered_topic_embedding is not None:
+                # Calculate cluster quality (cohesion)
+                num_pages = len(nlp_processor.page_embeddings)
+                if num_pages >= 5:
+                    # Use lower threshold when we have confident topic
+                    # More pages = more confident = can be stricter
+                    base_threshold = 0.5
+                    confidence_factor = min(0.15, (num_pages - 5) * 0.01)
+                    dynamic_threshold = base_threshold - confidence_factor
+                else:
+                    # Not enough data yet, be permissive
+                    dynamic_threshold = 0.45
+            else:
+                # Topic not discovered yet, very permissive
+                dynamic_threshold = 0.40
+        else:
+            # Explicit topic provided or no auto-discovery
+            dynamic_threshold = 0.5
+
+        if nlp_result["topic_relevance"] < dynamic_threshold:
             logger.info(
-                f"Low relevance ({nlp_result['topic_relevance']:.2f}), skipping: {url}"
+                f"Low relevance ({nlp_result['topic_relevance']:.2f} < {dynamic_threshold:.2f}), skipping: {url}"
             )
             self.url_manager.mark_visited(url)
             return None
@@ -265,7 +302,7 @@ class IntelligentCrawler:
     async def crawl(
         self,
         seed_urls: list[str],
-        topic: str,
+        topic: str | None = None,
         relevance_threshold: float = 0.5,
         embedding_model: str = "jhgan/ko-sroberta-multitask",
         summarization_model: Optional[str] = None,
@@ -279,7 +316,8 @@ class IntelligentCrawler:
 
         Args:
             seed_urls: Initial URLs to start crawling
-            topic: Topic to filter pages by
+            topic: Topic to filter pages by (optional). If None, topic is auto-discovered
+                   from first few pages and used for filtering irrelevant content
             relevance_threshold: Minimum relevance to include full content
             embedding_model: Sentence transformer model for embeddings
             summarization_model: Model for text summarization (optional)
@@ -289,22 +327,42 @@ class IntelligentCrawler:
             cache_ttl: Cache time-to-live in seconds
 
         Returns:
-            Dictionary with crawl results
+            Dictionary with crawl results (includes 'auto_discovered_topic' if topic was None)
         """
         from .extraction import ContentExtractor
         from .graph import GraphManager
         from .nlp import NLPProcessor
 
-        content_extractor = ContentExtractor()
-        nlp_processor = NLPProcessor(
-            embedding_model=embedding_model,
-            summarization_model=summarization_model,
-            device=device,
-            enable_cache=enable_cache,
-            cache_maxsize=cache_maxsize,
-            cache_ttl=cache_ttl,
-        )
-        graph_manager = GraphManager()
+        # Reuse components if already initialized (saves memory on repeated crawls)
+        if self._content_extractor is None:
+            self._content_extractor = ContentExtractor()
+
+        if self._nlp_processor is None:
+            self._nlp_processor = NLPProcessor(
+                embedding_model=embedding_model,
+                summarization_model=summarization_model,
+                device=device,
+                enable_cache=enable_cache,
+                cache_maxsize=cache_maxsize,
+                cache_ttl=cache_ttl,
+            )
+        else:
+            # Reset state for new crawl but keep model loaded
+            self._nlp_processor.page_embeddings = []
+            self._nlp_processor.page_summaries = []
+            self._nlp_processor.page_titles = []
+            self._nlp_processor.discovered_topic_embedding = None
+            self._nlp_processor.discovered_topic_text = None
+
+        if self._graph_manager is None:
+            self._graph_manager = GraphManager()
+        else:
+            # Reset graph for new crawl
+            self._graph_manager = GraphManager()
+
+        content_extractor = self._content_extractor
+        nlp_processor = self._nlp_processor
+        graph_manager = self._graph_manager
 
         for url in seed_urls:
             normalized_url = self.url_manager.normalize_url(url)
@@ -427,6 +485,14 @@ class IntelligentCrawler:
 
         # Collect performance metrics
         results = graph_manager.get_results(relevance_threshold=relevance_threshold)
+
+        # Add auto-discovered topic to results
+        if topic is None and hasattr(nlp_processor, "discovered_topic_text"):
+            results["auto_discovered_topic"] = nlp_processor.discovered_topic_text
+            if nlp_processor.discovered_topic_text:
+                logger.info(
+                    f"Final discovered topic: {nlp_processor.discovered_topic_text}"
+                )
 
         if self.perf:
             # Record cache stats
